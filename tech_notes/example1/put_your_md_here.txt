@@ -1,0 +1,1 @@
+Place your Markdown (.md) files in this folder.

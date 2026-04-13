@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+
+# RAG database and index cache (auto-generated)
+chroma_db/
+doc_registry.json
+
+# PDF documents — ignore contents but keep example structure
+docs/**
+!docs/example1/
+!docs/example1/put_your_PDF_here.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

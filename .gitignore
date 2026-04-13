@@ -1,0 +1,4 @@
+# Personal notes — ignore contents but keep example structure
+tech_notes/**
+!tech_notes/example1/
+!tech_notes/example1/put_your_md_here.txt

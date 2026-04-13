@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "datasheet-rag": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/rag_system/.venv/Scripts/python.exe",
+      "args": ["${workspaceFolder}/rag_system/datasheet_mcp.py"],
+      "env": {}
+    }
+  }
+}
