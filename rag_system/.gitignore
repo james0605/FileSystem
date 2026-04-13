@@ -5,6 +5,9 @@
 chroma_db/
 doc_registry.json
 
+# Temporary/generated RAG scripts
+_rag_*.py
+
 # PDF documents — ignore contents but keep example structure
 docs/**
 !docs/example1/
