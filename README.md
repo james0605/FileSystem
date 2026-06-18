@@ -29,7 +29,6 @@ FileSystem/
 ├── rag_system/              ← the RAG engine
 │   ├── docs/                ← put your PDF / XLSX files here (subfolders = categories)
 │   │   └── example1/
-│   ├── tech_notes/  →  ../tech_notes   (indexed from the repo root, see below)
 │   ├── sync_docs.py         ← build / update the index
 │   ├── watch_docs.py        ← optional auto-indexing file watcher
 │   ├── datasheet_mcp.py     ← MCP server (search_documents, list_documents)
@@ -41,6 +40,9 @@ FileSystem/
 └── tech_notes/              ← your Markdown notes (git-ignored; indexed by RAG)
     └── example1/
 ```
+
+> `tech_notes/` sits at the **repo root**, next to `rag_system/` (not inside it).
+> The engine reads it from there — see `NOTES_DIR` in `sync_docs.py`.
 
 > Your actual documents and notes are **git-ignored** — only the empty
 > `example1/` placeholder structure is tracked. Nothing confidential is committed.
