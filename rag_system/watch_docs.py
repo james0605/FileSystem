@@ -1,7 +1,7 @@
 """
 watch_docs.py - File watcher for automatic RAG indexing.
 
-Monitors docs/ (PDFs) and tech_notes/ (Markdown) recursively.
+Monitors docs/ (PDFs, XLSX) and tech_notes/ (Markdown) recursively.
 On file add/modify/delete it updates ChromaDB and doc_registry.json
 without restarting the process.
 """
@@ -32,6 +32,7 @@ from sync_docs import (
     chunk_ids_for_source,
     index_document,
     index_note,
+    index_spreadsheet,
     load_registry,
     md5_file,
     relative_source,
@@ -77,10 +78,17 @@ class DocEventHandler(FileSystemEventHandler):
     def _is_md(path: str) -> bool:
         return path.lower().endswith(".md")
 
+    @staticmethod
+    def _is_xlsx(path: str) -> bool:
+        # Ignore Excel temp lock files like "~$Book.xlsx"
+        return path.lower().endswith(".xlsx") and not Path(path).name.startswith("~$")
+
     def _source_and_indexer(self, path: Path):
         """Return (source_key, index_fn) based on file type and location."""
         if self._is_pdf(str(path)):
             return relative_source(path), index_document
+        if self._is_xlsx(str(path)):
+            return relative_source(path), index_spreadsheet
         if self._is_md(str(path)):
             return relative_note_source(path), index_note
         return None, None

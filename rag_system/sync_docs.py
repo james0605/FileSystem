@@ -1,9 +1,9 @@
 """
 sync_docs.py - Document indexing & sync script for local RAG system.
 
-Recursively scans docs/ for PDF files and tech_notes/ for Markdown files,
-computes MD5 hashes to detect changes, and maintains a ChromaDB vector store
-with chunked embeddings.
+Recursively scans docs/ for PDF and XLSX files and tech_notes/ for Markdown
+files, computes MD5 hashes to detect changes, and maintains a ChromaDB vector
+store with chunked embeddings.
 """
 
 import hashlib
@@ -211,6 +211,51 @@ def extract_sections_pdf(pdf_path: Path) -> list[tuple[str, str, int]]:
         doc.close()
 
 
+def extract_sections_xlsx(xlsx_path: Path) -> list[tuple[str, str, int]]:
+    """
+    Extract one section per worksheet from an .xlsx workbook.
+    Returns list of (sheet_name, text, sheet_number_1indexed).
+
+    Each non-empty row is serialized as 'cell | cell | cell' so that
+    tabular relationships survive into the embedded text.
+
+    Notes / limitations:
+      - Only visible worksheets are indexed; hidden/very-hidden helper
+        sheets are skipped so their scratch data does not pollute search.
+      - data_only=True reads Excel's cached cell values. For workbooks
+        generated programmatically (pandas/xlsxwriter) and never opened
+        in Excel, formula cells have no cached value and read as None,
+        i.e. formula-only rows are dropped. A warning is printed when a
+        visible sheet yields no text so this case is at least visible.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(str(xlsx_path), read_only=True, data_only=True)
+    sections: list[tuple[str, str, int]] = []
+    try:
+        sheet_idx = 0
+        for ws in wb.worksheets:
+            if ws.sheet_state != "visible":
+                continue
+            sheet_idx += 1
+            rows_text: list[str] = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                if cells:
+                    rows_text.append(" | ".join(cells))
+            text = "\n".join(rows_text).strip()
+            if text:
+                sections.append((ws.title, text, sheet_idx))
+            else:
+                print(
+                    f"  [!] {xlsx_path.name}: visible sheet '{ws.title}' yielded no "
+                    f"text (empty, or formula-only with no cached values)."
+                )
+    finally:
+        wb.close()
+    return sections
+
+
 def relative_source(pdf_path: Path) -> str:
     """Return POSIX relative path from docs/, e.g. 'dir1/A.pdf'."""
     return pdf_path.relative_to(DOCS_DIR).as_posix()
@@ -339,6 +384,49 @@ def index_document(pdf_path: Path, collection, model: SentenceTransformer) -> in
     return len(all_ids)
 
 
+def index_spreadsheet(xlsx_path: Path, collection, model: SentenceTransformer) -> int:
+    """Chunk and embed an .xlsx workbook, one section per sheet. Returns chunk count."""
+    source = relative_source(xlsx_path)
+    filename = xlsx_path.name
+    category = xlsx_path.parent.name if xlsx_path.parent != DOCS_DIR else ""
+
+    sections = extract_sections_xlsx(xlsx_path)
+    all_ids, all_embeddings, all_documents, all_metadatas = [], [], [], []
+
+    for section_idx, (sheet_name, text, sheet_number) in enumerate(sections):
+        chunks = chunk_text(text)
+        for chunk_idx, chunk in enumerate(chunks):
+            chunk_id = f"{source}::s{section_idx}::c{chunk_idx}"
+            # Prepend sheet name so each chunk carries its worksheet context
+            enriched = f"{sheet_name}\n\n{chunk}" if sheet_name else chunk
+            embedding = model.encode(enriched, normalize_embeddings=True).tolist()
+            all_ids.append(chunk_id)
+            all_embeddings.append(embedding)
+            all_documents.append(enriched)
+            all_metadatas.append(
+                {
+                    "source": source,
+                    "filename": filename,
+                    "category": category,
+                    "section": sheet_name,
+                    "page": sheet_number,
+                    "doc_type": "xlsx",
+                }
+            )
+
+    if all_ids:
+        batch = 512
+        for i in range(0, len(all_ids), batch):
+            collection.upsert(
+                ids=all_ids[i : i + batch],
+                embeddings=all_embeddings[i : i + batch],
+                documents=all_documents[i : i + batch],
+                metadatas=all_metadatas[i : i + batch],
+            )
+
+    return len(all_ids)
+
+
 def remove_document(source: str, collection) -> int:
     """Delete all chunks for a given source from ChromaDB. Returns count removed."""
     ids = chunk_ids_for_source(source, collection)
@@ -351,8 +439,17 @@ def remove_document(source: str, collection) -> int:
 # Main sync logic
 # ---------------------------------------------------------------------------
 
+def pick_indexer(source: str, file_path: Path):
+    """Select the indexing function based on source location and file type."""
+    if source.startswith("notes/"):
+        return index_note
+    if file_path.suffix.lower() == ".xlsx":
+        return index_spreadsheet
+    return index_document
+
+
 def sync(force: bool = False) -> None:
-    print(f"[sync] Scanning {DOCS_DIR} (PDFs) and {NOTES_DIR} (Markdown notes) ...")
+    print(f"[sync] Scanning {DOCS_DIR} (PDFs, XLSX) and {NOTES_DIR} (Markdown notes) ...")
 
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
@@ -372,10 +469,12 @@ def sync(force: bool = False) -> None:
     registry = load_registry()
     disk_files: dict[str, Path] = {}
 
-    # Collect PDFs
-    for pdf_path in sorted(DOCS_DIR.rglob("*.pdf")):
-        src = relative_source(pdf_path)
-        disk_files[src] = pdf_path
+    # Collect PDFs and spreadsheets from docs/ (skip Excel temp lock files "~$...")
+    for doc_path in sorted(DOCS_DIR.rglob("*")):
+        if doc_path.name.startswith("~$"):
+            continue
+        if doc_path.suffix.lower() in (".pdf", ".xlsx"):
+            disk_files[relative_source(doc_path)] = doc_path
 
     # Collect Markdown notes
     for md_path in sorted(NOTES_DIR.rglob("*.md")):
@@ -388,14 +487,11 @@ def sync(force: bool = False) -> None:
     for source, file_path in disk_files.items():
         current_hash = md5_file(file_path)
         entry = registry.get(source)
-        is_note = source.startswith("notes/")
+        indexer = pick_indexer(source, file_path)
 
         if entry is None:
             print(f"  [+] Indexing new: {source}")
-            if is_note:
-                chunk_count = index_note(file_path, collection, model)
-            else:
-                chunk_count = index_document(file_path, collection, model)
+            chunk_count = indexer(file_path, collection, model)
             registry[source] = {
                 "hash": current_hash,
                 "chunk_count": chunk_count,
@@ -406,10 +502,7 @@ def sync(force: bool = False) -> None:
         elif force or entry.get("hash") != current_hash:
             print(f"  [~] Re-indexing modified: {source}")
             remove_document(source, collection)
-            if is_note:
-                chunk_count = index_note(file_path, collection, model)
-            else:
-                chunk_count = index_document(file_path, collection, model)
+            chunk_count = indexer(file_path, collection, model)
             registry[source] = {
                 "hash": current_hash,
                 "chunk_count": chunk_count,
@@ -430,13 +523,14 @@ def sync(force: bool = False) -> None:
 
     save_registry(registry)
 
-    pdf_count = sum(1 for s in registry if not s.startswith("notes/"))
+    pdf_count = sum(1 for s in registry if s.lower().endswith(".pdf"))
+    xlsx_count = sum(1 for s in registry if s.lower().endswith(".xlsx"))
     note_count = sum(1 for s in registry if s.startswith("notes/"))
     print(
         f"\n[sync] Done. "
         f"Added={added}, Updated={updated}, Removed={removed}, Skipped={skipped}"
     )
-    print(f"[sync] Indexed: {pdf_count} PDFs, {note_count} Markdown notes")
+    print(f"[sync] Indexed: {pdf_count} PDFs, {xlsx_count} spreadsheets, {note_count} Markdown notes")
 
 
 if __name__ == "__main__":

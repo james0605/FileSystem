@@ -62,9 +62,10 @@ def _load_registry() -> dict:
 mcp = FastMCP(
     name="datasheet-rag",
     instructions=(
-        "Local RAG server for technical datasheets (PDFs) and tech notes (Markdown). "
-        "Use search_documents to retrieve relevant passages from both sources, "
-        "filter by doc_type='pdf' or doc_type='note' to narrow results, "
+        "Local RAG server for technical datasheets (PDFs), spreadsheets (XLSX), "
+        "and tech notes (Markdown). "
+        "Use search_documents to retrieve relevant passages from all sources, "
+        "filter by doc_type='pdf', doc_type='xlsx', or doc_type='note' to narrow results, "
         "and list_documents to see what is indexed."
     ),
 )
@@ -86,7 +87,7 @@ def search_documents(
         n_results: Number of top results to return (default 5).
         source: Optional filter by relative file path, e.g. "dir1/A.pdf" or "notes/git/foo.md".
         category: Optional filter by category name, e.g. "TC4Dx" or "claude-code".
-        doc_type: Optional filter by type: "pdf" for datasheets, "note" for tech notes.
+        doc_type: Optional filter by type: "pdf" for datasheets, "xlsx" for spreadsheets, "note" for tech notes.
 
     Returns:
         Formatted string with matching passages, source paths, and location info.
@@ -136,6 +137,9 @@ def search_documents(
         if dtype == "note":
             section = meta.get("section", "")
             location = f"Section: {section}" if section else "Note"
+        elif dtype == "xlsx":
+            sheet = meta.get("section", "")
+            location = f"Sheet: {sheet}" if sheet else "Spreadsheet"
         else:
             page = meta.get("page", "?")
             location = f"Page {page}"
@@ -152,8 +156,8 @@ def list_documents() -> str:
     List all indexed documents and notes grouped by type and category.
 
     Returns:
-        Formatted string showing PDFs and tech notes separately,
-        with chunk count and last indexed date for each entry.
+        Formatted string showing documents (PDF / XLSX) and tech notes
+        separately, with chunk count and last indexed date for each entry.
     """
     registry = _load_registry()
 
@@ -163,11 +167,11 @@ def list_documents() -> str:
     pdfs = {s: i for s, i in registry.items() if not s.startswith("notes/")}
     notes = {s: i for s, i in registry.items() if s.startswith("notes/")}
 
-    lines = [f"Indexed documents ({len(registry)} total: {len(pdfs)} PDFs, {len(notes)} notes)\n"]
+    lines = [f"Indexed documents ({len(registry)} total: {len(pdfs)} files, {len(notes)} notes)\n"]
 
-    # PDFs grouped by subdirectory
+    # PDFs / spreadsheets grouped by subdirectory
     if pdfs:
-        lines.append("=== PDFs ===")
+        lines.append("=== Documents (PDF / XLSX) ===")
         grouped: dict[str, list] = {}
         for source, info in sorted(pdfs.items()):
             parts = source.split("/")
